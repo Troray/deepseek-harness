@@ -163,7 +163,7 @@ jobs:
              ./dsh --profile headless "请帮我分析当前目录下的代码结构"
 
           3. 后台持久服务模式（配合 nohup 或 systemd）：
-             nohup ./dsh web --host 0.0.0.0 --port 3081 --no-open > dsh.log 2>&1 &
+             nohup ./dsh web --host 192.168.1.100 --port 3081 --no-open > dsh.log 2>&1 &
 
           三、API Key 配置：
           可以在当前目录创建 .env 文件，内容如下：

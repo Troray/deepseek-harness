@@ -12,7 +12,7 @@ import { spawn } from 'node:child_process'
 import { pnpmInvocation, restoreLegacyHoists } from './executable-packaging.ts'
 import { existsSync, statSync } from 'node:fs'
 import { chmod, copyFile, cp, glob, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
-import { basename, dirname, join, resolve, sep } from 'node:path'
+import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { parseArgs } from 'node:util'
 import { pathToFileURL } from 'node:url'
 import { resolveLinuxNodePtyAddon, resolveWindowsNodePtyAddons } from './executable-native-pty.ts'
@@ -69,6 +69,12 @@ const ASSET_GLOBS = [
   'node_modules/**/*.yml',
   // web-app builds this path dynamically, so pkg cannot discover the static frontend.
   'node_modules/@deepseek-ai/dsh-web-frontend/dist/**/*',
+  'node_modules/**/@deepseek-ai/dsh-web-frontend/dist/**/*',
+  'node_modules/**/@deepseek-ai/dsh-host-directory-picker*/**/*',
+  'node_modules/**/*.css',
+  'node_modules/**/*.html',
+  'node_modules/**/*.woff2',
+  'node_modules/**/*.webmanifest',
   // The diagnosis provider extracts its PowerShell script for an external interpreter.
   'node_modules/@deepseek-ai/dsh-sandbox-windows-acl/assets/**/*',
 ]
@@ -323,6 +329,7 @@ class SingleExeBuild {
     }
     await this.restoreLegacyHoists()
     await this.materializeStagedLinks()
+    await this.stageWebAndPeerPackages()
     if (this.cli.dryRun) {
       for (const name of DEPLOY_ONLY_DOCS) console.log(`build-exe-for-python-sdk: [dry-run] rm -f ${join(this.staging, name)}`)
     } else {
@@ -356,6 +363,81 @@ class SingleExeBuild {
     }
     await materializeStagedLinks(this.staging)
     await deduplicateStagedWorkspacePackages(this.staging, root)
+  }
+
+  /**
+   * Stage the web frontend static build and required workspace peer packages
+   * into the deployed runtime node_modules so that pkg includes them in the single-exe.
+   */
+  private async stageWebAndPeerPackages(): Promise<void> {
+    if (this.cli.dryRun) {
+      console.log('build-exe-for-python-sdk: [dry-run] stage web frontend and peer packages')
+      return
+    }
+
+    // 1. Ensure required host peer packages like @deepseek-ai/dsh-host-directory-picker are staged
+    const peerPackages = [
+      { name: '@deepseek-ai/dsh-host-directory-picker', source: 'packages/host/directory-picker' },
+      { name: '@deepseek-ai/dsh-host-directory-picker-auto', source: 'packages/host/directory-picker-auto' },
+      { name: '@deepseek-ai/dsh-host-directory-picker-browse', source: 'packages/host/directory-picker-browse' },
+      { name: '@deepseek-ai/dsh-host-directory-picker-native', source: 'packages/host/directory-picker-native' },
+    ]
+
+    for (const pkg of peerPackages) {
+      const src = resolve(root, pkg.source)
+      if (!existsSync(src)) continue
+
+      const topDest = join(this.staging, 'node_modules', ...pkg.name.split('/'))
+      await mkdir(topDest, { recursive: true })
+      await cp(src, topDest, {
+        recursive: true,
+        dereference: true,
+        filter: (p) => {
+          const parts = relative(src, p).split(sep)
+          return !parts.includes('node_modules') && !parts.includes('tests') && !p.endsWith('.tsbuildinfo')
+        },
+      })
+
+      // Also ensure nested node_modules under @deepseek-ai/dsh have access
+      const nestedDest = join(this.staging, 'node_modules', '@deepseek-ai', 'dsh', 'node_modules', ...pkg.name.split('/'))
+      if (existsSync(join(this.staging, 'node_modules', '@deepseek-ai', 'dsh', 'node_modules'))) {
+        await mkdir(nestedDest, { recursive: true })
+        await cp(src, nestedDest, {
+          recursive: true,
+          dereference: true,
+          filter: (p) => {
+            const parts = relative(src, p).split(sep)
+            return !parts.includes('node_modules') && !parts.includes('tests') && !p.endsWith('.tsbuildinfo')
+          },
+        })
+      }
+    }
+
+    // 2. Stage the web frontend (@deepseek-ai/dsh-web-frontend) and its built dist/
+    const webSrc = resolve(root, 'apps/web')
+    const webDist = join(webSrc, 'dist')
+    if (!existsSync(join(webDist, 'index.html'))) {
+      console.log('build-exe-for-python-sdk: apps/web/dist is missing or incomplete, building web frontend...')
+      await this.runPnpm('build web frontend', ['--filter', '@deepseek-ai/dsh-web-frontend', 'run', 'build'])
+    }
+
+    if (existsSync(join(webDist, 'index.html'))) {
+      // Ensure top-level staged package
+      const topLevelFrontend = join(this.staging, 'node_modules', '@deepseek-ai', 'dsh-web-frontend')
+      await mkdir(topLevelFrontend, { recursive: true })
+      await copyFile(join(webSrc, 'package.json'), join(topLevelFrontend, 'package.json'))
+      await cp(webDist, join(topLevelFrontend, 'dist'), { recursive: true })
+
+      // Also ensure any nested @deepseek-ai/dsh-web-frontend in staging has dist/
+      for await (const pkgJson of glob('node_modules/**/@deepseek-ai/dsh-web-frontend/package.json', { cwd: this.staging })) {
+        const targetDist = join(this.staging, dirname(pkgJson), 'dist')
+        await mkdir(targetDist, { recursive: true })
+        await cp(webDist, targetDist, { recursive: true })
+      }
+      console.log('build-exe-for-python-sdk: staged web frontend static dist into staging closure')
+    } else {
+      throw new Error(`build-exe-for-python-sdk: failed to locate or build web frontend at ${webDist}`)
+    }
   }
 
   /** Add the executable entry and pkg assets to the staged manifest. */
