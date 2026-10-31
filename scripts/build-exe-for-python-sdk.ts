@@ -388,21 +388,9 @@ class SingleExeBuild {
       if (!existsSync(src)) continue
 
       const topDest = join(this.staging, 'node_modules', ...pkg.name.split('/'))
-      await mkdir(topDest, { recursive: true })
-      await cp(src, topDest, {
-        recursive: true,
-        dereference: true,
-        filter: (p) => {
-          const parts = relative(src, p).split(sep)
-          return !parts.includes('node_modules') && !parts.includes('tests') && !p.endsWith('.tsbuildinfo')
-        },
-      })
-
-      // Also ensure nested node_modules under @deepseek-ai/dsh have access
-      const nestedDest = join(this.staging, 'node_modules', '@deepseek-ai', 'dsh', 'node_modules', ...pkg.name.split('/'))
-      if (existsSync(join(this.staging, 'node_modules', '@deepseek-ai', 'dsh', 'node_modules'))) {
-        await mkdir(nestedDest, { recursive: true })
-        await cp(src, nestedDest, {
+      if (!existsSync(join(topDest, 'package.json'))) {
+        await mkdir(topDest, { recursive: true })
+        await cp(src, topDest, {
           recursive: true,
           dereference: true,
           filter: (p) => {
@@ -410,6 +398,23 @@ class SingleExeBuild {
             return !parts.includes('node_modules') && !parts.includes('tests') && !p.endsWith('.tsbuildinfo')
           },
         })
+      }
+
+      // Also ensure nested node_modules under @deepseek-ai/dsh have access
+      const nestedNodeModules = join(this.staging, 'node_modules', '@deepseek-ai', 'dsh', 'node_modules')
+      if (existsSync(nestedNodeModules)) {
+        const nestedDest = join(nestedNodeModules, ...pkg.name.split('/'))
+        if (!existsSync(join(nestedDest, 'package.json'))) {
+          await mkdir(nestedDest, { recursive: true })
+          await cp(src, nestedDest, {
+            recursive: true,
+            dereference: true,
+            filter: (p) => {
+              const parts = relative(src, p).split(sep)
+              return !parts.includes('node_modules') && !parts.includes('tests') && !p.endsWith('.tsbuildinfo')
+            },
+          })
+        }
       }
     }
 
@@ -425,14 +430,20 @@ class SingleExeBuild {
       // Ensure top-level staged package
       const topLevelFrontend = join(this.staging, 'node_modules', '@deepseek-ai', 'dsh-web-frontend')
       await mkdir(topLevelFrontend, { recursive: true })
-      await copyFile(join(webSrc, 'package.json'), join(topLevelFrontend, 'package.json'))
-      await cp(webDist, join(topLevelFrontend, 'dist'), { recursive: true })
+      if (!existsSync(join(topLevelFrontend, 'package.json'))) {
+        await copyFile(join(webSrc, 'package.json'), join(topLevelFrontend, 'package.json'))
+      }
+      const topDist = join(topLevelFrontend, 'dist')
+      if (existsSync(topDist)) await rm(topDist, { recursive: true, force: true })
+      await cp(webDist, topDist, { recursive: true })
 
       // Also ensure any nested @deepseek-ai/dsh-web-frontend in staging has dist/
       for await (const pkgJson of glob('node_modules/**/@deepseek-ai/dsh-web-frontend/package.json', { cwd: this.staging })) {
         const targetDist = join(this.staging, dirname(pkgJson), 'dist')
-        await mkdir(targetDist, { recursive: true })
-        await cp(webDist, targetDist, { recursive: true })
+        if (targetDist !== topDist) {
+          if (existsSync(targetDist)) await rm(targetDist, { recursive: true, force: true })
+          await cp(webDist, targetDist, { recursive: true })
+        }
       }
       console.log('build-exe-for-python-sdk: staged web frontend static dist into staging closure')
     } else {
