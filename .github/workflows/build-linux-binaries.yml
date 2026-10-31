@@ -1,0 +1,178 @@
+name: Build Linux Binaries (x64 / arm64)
+
+# 专为无桌面/无头环境（如 Linux 服务器、Armbian 开发板、树莓派等）编译的独立单文件可执行程序
+# 内嵌 Node.js 24 运行时环境，无需在目标机器安装 Node.js 或 pnpm，解压即用。
+# 支持 Web 浏览器界面服务模式（./dsh web）与 Headless 命令行任务模式（./dsh --profile headless）
+
+on:
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: '构建目标平台（逗号分隔；默认同时构建 x64 与 arm64）'
+        type: string
+        required: false
+        default: 'node24-linux-x64,node24-linux-arm64'
+      compress:
+        description: '单文件 SEA 归档压缩算法（Brotli 体积最小；GZip 速度较快）'
+        type: choice
+        options: [Brotli, GZip, None]
+        default: Brotli
+        required: false
+
+concurrency:
+  group: build-linux-binaries-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  DSH_TELEMETRY_DISABLED: '1'
+  DSH_BUILD_CLIENT_PROFILE: 'official'
+
+jobs:
+  plan:
+    name: Plan targets
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - name: Compute matrix from targets
+        id: plan
+        env:
+          TARGETS: ${{ inputs.targets || 'node24-linux-x64,node24-linux-arm64' }}
+        run: |
+          set -euo pipefail
+          matrix='[]'
+          IFS=',' read -r -a targets <<< "$TARGETS"
+          for raw in "${targets[@]}"; do
+            t="$(echo "$raw" | xargs)"
+            [ -z "$t" ] && continue
+            case "$t" in
+              node24-linux-x64)   runner=ubuntu-24.04; platform=linux-x64 ;;
+              node24-linux-arm64) runner=ubuntu-24.04-arm; platform=linux-arm64 ;;
+              *)
+                echo "::error::Unsupported target '$t'. Supported: node24-linux-x64, node24-linux-arm64."
+                exit 1
+                ;;
+            esac
+            matrix="$(jq -c --arg target "$t" --arg runner "$runner" --arg platform "$platform" '. + [{target: $target, runner: $runner, platform: $platform}]' <<< "$matrix")"
+          done
+          if [ "$matrix" = '[]' ]; then
+            echo "::error::No targets selected."
+            exit 1
+          fi
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: plan
+    name: ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v5.0.0
+        with:
+          dest: ${{ runner.temp }}/setup-pnpm-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - uses: actions/cache@v6.1.0
+        with:
+          path: ~/.pkg-cache
+          key: pkg-fetch-${{ matrix.target }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pkg-fetch-${{ matrix.target }}-
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if pnpm install --frozen-lockfile; then exit 0; fi
+            [ "$attempt" -lt 3 ] && sleep 10
+          done
+          exit 1
+
+      - name: Build compatible Linux node-pty (glibc 2.28)
+        shell: bash
+        run: bash scripts/prepare-linux-node-pty.sh
+
+      - name: Build single-exe binary
+        run: >-
+          pnpm exec tsx scripts/build-exe-for-python-sdk.ts
+          --targets=${{ matrix.target }}
+          --build-artifacts
+          --compress=${{ inputs.compress || 'Brotli' }}
+
+      - name: Package standalone archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          pkg_dir="dsh-${{ matrix.platform }}"
+          mkdir -p "$pkg_dir"
+
+          # 复制主可执行文件及其 ripgrep 伴随文件
+          cp "dist-exe/deepseek-harness-sdk-runtime-${{ matrix.platform }}" "$pkg_dir/"
+          cp "dist-exe/deepseek-harness-sdk-runtime-${{ matrix.platform }}-rg" "$pkg_dir/"
+
+          # 创建便捷软链接 dsh 和 dsh-rg，使用户可以直接使用 ./dsh 命令
+          (cd "$pkg_dir" && ln -sf "deepseek-harness-sdk-runtime-${{ matrix.platform }}" dsh)
+          (cd "$pkg_dir" && ln -sf "deepseek-harness-sdk-runtime-${{ matrix.platform }}-rg" dsh-rg)
+
+          # 复制伴随资源目录
+          if [ -d "dist-exe/${{ matrix.platform }}" ]; then
+            cp -r "dist-exe/${{ matrix.platform }}" "$pkg_dir/"
+          fi
+
+          # 写入运行说明与快速上手文档
+          cat <<'EOF' > "$pkg_dir/README.txt"
+          ==================================================
+          DeepSeek Harness (Standalone Linux Binary)
+          ==================================================
+
+          一、环境说明：
+          本二进制包基于 Node.js 24 Enhanced SEA 打包，内嵌完整运行时与 Web 前端，
+          目标机器无需安装 Node.js、pnpm 或编译工具链，解压后即可直接运行。
+          底层原生扩展兼容 glibc 2.28+（Debian 10+、Ubuntu 20.04+ 及主流 Armbian 发行版）。
+
+          二、快速启动：
+
+          1. Web 服务模式（推荐在 Armbian/Linux 服务器上使用，支持电脑/手机浏览器访问）：
+             ./dsh web --host 0.0.0.0 --port 3081 --no-open
+             参数说明：
+             --host 0.0.0.0   允许局域网其他设备访问（若仅本机访问可用 127.0.0.1）
+             --port 3081      指定 Web 服务端口
+             --no-open        无头/无桌面环境下禁止尝试打开本地图形浏览器
+
+          2. 命令行单次任务模式（Headless CLI）：
+             export DEEPSEEK_API_KEY="sk-你的密钥"
+             ./dsh --profile headless "请帮我分析当前目录下的代码结构"
+
+          3. 后台持久服务模式（配合 nohup 或 systemd）：
+             nohup ./dsh web --host 0.0.0.0 --port 3081 --no-open > dsh.log 2>&1 &
+
+          三、API Key 配置：
+          可以在当前目录创建 .env 文件，内容如下：
+          DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
+          EOF
+
+          tar -czvf "dsh-${{ matrix.platform }}.tar.gz" "$pkg_dir"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: dsh-${{ matrix.platform }}
+          path: dsh-${{ matrix.platform }}.tar.gz
+          if-no-files-found: error
+          retention-days: 14
