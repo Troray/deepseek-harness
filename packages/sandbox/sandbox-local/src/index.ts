@@ -496,6 +496,9 @@ export class LocalSandboxProvider extends SandboxProvider {
     remove(dir)
   }
 
+  /** Detail explaining why candidate runners failed during the chain walk. */
+  private unavailableDetail?: string
+
   /**
    * Resolve which runner confines commands, once, for the provider's
    * lifetime: this platform's chain ({@link PLATFORM_CHAINS}), its sole
@@ -505,7 +508,7 @@ export class LocalSandboxProvider extends SandboxProvider {
    */
   private selectRunner(mode: ConfinedSandboxMode): SelectedRunner {
     this.selectedRunner ??= this.chainVerdict()
-    if (this.selectedRunner === 'unavailable') throw new SandboxUnavailableError(mode)
+    if (this.selectedRunner === 'unavailable') throw new SandboxUnavailableError(mode, this.unavailableDetail)
     return this.selectedRunner
   }
 
@@ -516,11 +519,35 @@ export class LocalSandboxProvider extends SandboxProvider {
     if (first === undefined) return 'unavailable'
     // A sole candidate needs no arbitration; its execution-time refusal still fails closed.
     if (rest.length === 0) return { runner: first, enforcement: STATIC_ENFORCEMENT[first] }
+    const failures: string[] = []
     for (const runner of chain) {
       const enforcement = this.probeRunner(runner)
       if (enforcement !== 'unusable') return { runner, enforcement }
+      failures.push(this.diagnoseRunnerFailure(runner))
     }
+    this.unavailableDetail = failures.length > 0 ? failures.join('; ') : undefined
     return 'unavailable'
+  }
+
+  /** Summarize why one candidate runner was unusable to enrich diagnostic reports. */
+  private diagnoseRunnerFailure(runner: SelectedRunner['runner']): string {
+    switch (runner) {
+      case 'bwrap':
+        return 'bwrap not found or cannot enforce profile (install bubblewrap)'
+      case 'landlock': {
+        const launcher = this.landlockLauncher()
+        if (!existsSync(launcher)) {
+          return `landlock-run binary missing at ${launcher}`
+        }
+        return 'landlock-run probe failed (unsupported kernel ABI or Landlock LSM disabled)'
+      }
+      case 'seatbelt':
+        return 'sandbox-exec not found or refused profile'
+      case 'windows-acl':
+        return 'windows-acl runner failed to start'
+      default:
+        return assertNever(runner)
+    }
   }
 
   /** One rung's functional probe (each at most once, via the chain walk). */

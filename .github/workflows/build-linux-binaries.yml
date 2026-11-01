@@ -104,6 +104,23 @@ jobs:
           done
           exit 1
 
+      - name: Install musl toolchain
+        shell: bash
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq musl-tools
+          musl-gcc --version
+
+      - name: Build complete native system binaries
+        shell: bash
+        run: |
+          pnpm --filter @deepseek-ai/node-addon-system-workspace run build:native
+
+      - name: Verify native binaries metadata
+        shell: bash
+        run: |
+          node native/system/scripts/verify-launcher-binary.mjs packages/${{ matrix.platform }}
+
       - name: Build compatible Linux node-pty (glibc 2.28)
         shell: bash
         run: bash scripts/prepare-linux-node-pty.sh

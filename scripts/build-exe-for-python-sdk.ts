@@ -80,6 +80,9 @@ const ASSET_GLOBS = [
   // The diagnosis provider extracts its PowerShell script for an external interpreter.
   'node_modules/@deepseek-ai/dsh-sandbox-windows-acl/assets/**/*',
   'node_modules/**/@deepseek-ai/dsh-sandbox-windows-acl/assets/**/*',
+  // Native addon system packages contain static-musl executables without file extensions (e.g. landlock-run).
+  'node_modules/@deepseek-ai/node-addon-system-*/**/*',
+  'node_modules/**/@deepseek-ai/node-addon-system-*/**/*',
 ]
 
 const PLATFORMS = ['linux', 'macos', 'win'] as const
@@ -509,6 +512,7 @@ class SingleExeBuild {
     const productBase = join(this.outDir, `${OUTPUT_BASENAME}-${target.platform}-${target.arch}`)
     const product = target.platform === 'win' ? `${productBase}.exe` : productBase
     await this.prepareNativePty(target)
+    await this.prepareNativeSystem(target)
     const platform = target.platform === 'macos' ? 'darwin' : target.platform === 'win' ? 'win32' : target.platform
     if (!this.cli.dryRun) await mkdir(this.outDir, { recursive: true })
     await this.runPnpm(`pkg ${target.spec}`, [
@@ -638,6 +642,43 @@ class SingleExeBuild {
     }
     await mkdir(dirname(destination), { recursive: true })
     await copyFile(source, destination)
+  }
+
+  /**
+   * Ensure native system binaries (e.g. landlock-run and flock) are staged and executable for Linux targets.
+   */
+  private async prepareNativeSystem(target: Target): Promise<void> {
+    if (target.platform !== 'linux') return
+    const platformDir = `linux-${target.arch}`
+    const sourcePkg = join(root, 'native', 'system', 'packages', platformDir)
+    const sourceLandlock = join(sourcePkg, 'bin', 'landlock-run')
+    const stagedPkg = join(this.staging, 'node_modules', '@deepseek-ai', `node-addon-system-${platformDir}`)
+    const stagedLandlock = join(stagedPkg, 'bin', 'landlock-run')
+
+    if (this.cli.dryRun) {
+      console.log(`build-exe-for-python-sdk: [dry-run] verify and stage native system binaries for ${platformDir}`)
+      return
+    }
+
+    if (!existsSync(sourceLandlock) && !existsSync(stagedLandlock)) {
+      throw new Error(
+        `build-exe-for-python-sdk: missing required Linux sandbox binary 'landlock-run' for ${platformDir}. `
+        + `Expected at ${sourceLandlock} or ${stagedLandlock}. `
+        + 'Ensure musl-tools is installed and run `pnpm --filter @deepseek-ai/node-addon-system-workspace run build:native`.',
+      )
+    }
+
+    const sourceBin = join(sourcePkg, 'bin')
+    if (existsSync(sourceBin)) {
+      for await (const pkgJson of glob(`node_modules/**/@deepseek-ai/node-addon-system-${platformDir}/package.json`, { cwd: this.staging })) {
+        const destDir = join(this.staging, dirname(pkgJson), 'bin')
+        await cp(sourceBin, destDir, { recursive: true })
+        const launcher = join(destDir, 'landlock-run')
+        if (existsSync(launcher)) {
+          await chmod(launcher, 0o755)
+        }
+      }
+    }
   }
 
   /**
