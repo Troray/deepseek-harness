@@ -50,6 +50,7 @@ interface WebOptions {
   trustedHost?: string[]
   tlsCert?: string
   tlsKey?: string
+  token?: string
 }
 
 /**
@@ -64,6 +65,7 @@ function webCommand(): Command {
     .option('--host <host>', 'bind address: one concrete IPv4 or IPv6 literal of a local interface; wildcard addresses are rejected')
     .option('--no-open', 'do not open the Web UI in the default browser')
     .option('--port <port>', 'listen port; pass 0 to let the OS pick a free one')
+    .option('--token <token>', 'custom launch authentication token')
     .option('--public-url <url>', 'advertise this HTTP(S) root in the printed, opened, runtime-context, and DSH_WEB_URL forms; grants no trust')
     .option('--trusted-host <authority...>', 'extra authority the /api browser-trust fence accepts (host or host:port; repeatable)')
     .option('--tls-cert <file>', 'PEM server certificate chain; requires --tls-key')
@@ -97,6 +99,12 @@ export function apply(ctx: Context): void {
     }
     if (options.port !== undefined && !/^\d+$/.test(options.port)) {
       program.error(`error: --port must be a number, got ${JSON.stringify(options.port)}`)
+    }
+    if (options.token !== undefined) {
+      if (!/^[A-Za-z0-9_-]+$/.test(options.token)) {
+        program.error('error: --token must contain only letters, digits, hyphens, and underscores')
+      }
+      process.env.DSH_TOKEN = options.token
     }
     let tls: TlsConfig | undefined
     if (options.tlsCert !== undefined && options.tlsKey !== undefined) {
