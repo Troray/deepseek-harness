@@ -137,7 +137,7 @@ export const SANDBOX_UNAVAILABLE = 'SANDBOX_UNAVAILABLE'
  * channel.
  */
 export class SandboxUnavailableError extends HarnessError {
-  constructor(mode: ConfinedSandboxMode, detail?: string) {
+  constructor(mode: ConfinedSandboxMode, detail?: string | undefined) {
     super(
       `sandbox mode "${mode}" is requested but no sandbox backend is usable on this host; `
       + 'refusing to run the command unconfined. Install bubblewrap or run a Landlock-enforcing '

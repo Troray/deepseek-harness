@@ -497,7 +497,7 @@ export class LocalSandboxProvider extends SandboxProvider {
   }
 
   /** Detail explaining why candidate runners failed during the chain walk. */
-  private unavailableDetail?: string
+  private unavailableDetail: string | undefined
 
   /**
    * Resolve which runner confines commands, once, for the provider's
