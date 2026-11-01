@@ -26,7 +26,22 @@ export interface OfficePackageArchive extends RuntimeNpmArchive {
  */
 export async function runtimeNpmArchive(name: string, version: string, lockfile = join(import.meta.dirname, '../pnpm-lock.yaml')): Promise<RuntimeNpmArchive> {
   const lock = parseYaml(await readFile(lockfile, 'utf8')) as { packages?: Record<string, { resolution?: { integrity?: string } }> }
-  const integrity = lock.packages?.[`${name}@${version}`]?.resolution?.integrity
+  let integrity = lock.packages?.[`${name}@${version}`]?.resolution?.integrity
+  if (typeof integrity !== 'string' || !/^sha512-[A-Za-z0-9+/]+={0,2}$/u.test(integrity)) {
+    try {
+      const response = await fetch(`https://registry.npmjs.org/${name}/${version}`, {
+        headers: { accept: 'application/json' },
+      })
+      if (response.ok) {
+        const pkg = await response.json() as { dist?: { integrity?: string } }
+        if (typeof pkg.dist?.integrity === 'string' && /^sha512-[A-Za-z0-9+/]+={0,2}$/u.test(pkg.dist.integrity)) {
+          integrity = pkg.dist.integrity
+        }
+      }
+    } catch {
+      // Fall through to error below
+    }
+  }
   if (typeof integrity !== 'string' || !/^sha512-[A-Za-z0-9+/]+={0,2}$/u.test(integrity)) {
     throw new Error(`runtime npm lock: missing SHA-512 integrity for ${name}@${version}`)
   }
