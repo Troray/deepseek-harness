@@ -669,14 +669,14 @@ class SingleExeBuild {
     }
 
     const sourceBin = join(sourcePkg, 'bin')
-    if (existsSync(sourceBin)) {
-      for await (const pkgJson of glob(`node_modules/**/@deepseek-ai/node-addon-system-${platformDir}/package.json`, { cwd: this.staging })) {
-        const destDir = join(this.staging, dirname(pkgJson), 'bin')
+    for await (const pkgJson of glob(`node_modules/**/@deepseek-ai/node-addon-system-${platformDir}/package.json`, { cwd: this.staging })) {
+      const destDir = join(this.staging, dirname(pkgJson), 'bin')
+      if (!existsSync(join(destDir, 'landlock-run')) && existsSync(sourceBin)) {
         await cp(sourceBin, destDir, { recursive: true })
-        const launcher = join(destDir, 'landlock-run')
-        if (existsSync(launcher)) {
-          await chmod(launcher, 0o755)
-        }
+      }
+      const launcher = join(destDir, 'landlock-run')
+      if (existsSync(launcher)) {
+        await chmod(launcher, 0o755)
       }
     }
   }
