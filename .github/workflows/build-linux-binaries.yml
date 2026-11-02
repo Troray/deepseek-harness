@@ -18,13 +18,36 @@ on:
         options: [Brotli, GZip, None]
         default: Brotli
         required: false
+      publish_release:
+        description: '构建完成后是否自动发布/更新到 GitHub Releases'
+        type: boolean
+        required: false
+        default: true
+      tag_name:
+        description: 'Release Tag 标签（默认: linux-latest；亦可填版本号如 v0.2.2）'
+        type: string
+        required: false
+        default: 'linux-latest'
+      draft:
+        description: '是否发布为草稿（Draft）'
+        type: boolean
+        required: false
+        default: false
+      prerelease:
+        description: '是否标记为预发布（Prerelease）'
+        type: boolean
+        required: false
+        default: false
+  push:
+    tags:
+      - 'v*'
 
 concurrency:
   group: build-linux-binaries-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
-  contents: read
+  contents: write
 
 env:
   DSH_TELEMETRY_DISABLED: '1'
@@ -152,39 +175,75 @@ jobs:
             cp -r "dist-exe/${{ matrix.platform }}" "$pkg_dir/"
           fi
 
+          # 复制 PM2 示例配置文件
+          cp ecosystem.config.example.js "$pkg_dir/"
+
           # 写入运行说明与快速上手文档
           cat <<'EOF' > "$pkg_dir/README.txt"
           ==================================================
           DeepSeek Harness (Standalone Linux Binary)
           ==================================================
 
-          一、环境说明：
+          一、环境与解压说明：
           本二进制包基于 Node.js 24 Enhanced SEA 打包，内嵌完整运行时与 Web 前端，
           目标机器无需安装 Node.js、pnpm 或编译工具链，解压后即可直接运行。
           底层原生扩展兼容 glibc 2.28+（Debian 10+、Ubuntu 20.04+ 及主流 Armbian 发行版）。
 
-          二、快速启动：
+          Linux 终端直接解压（系统自带 tar 命令）：
+             tar -xzf dsh-linux-*.tar.gz
+             cd dsh-linux-*
 
-          1. Web 服务模式（推荐在 Armbian/Linux 服务器上使用，支持电脑/手机浏览器访问）：
+          二、配置与密钥（推荐）：
+          可以在可执行文件同级目录创建或编辑 .env 文件：
+             DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
+             DSH_TOKEN=my_secret_token_123
+
+          * 说明：DSH_TOKEN 用于 Web 界面访问登录鉴权，仅支持字母、数字、下划线和中划线。
+
+          三、快速启动：
+
+          1. Web 服务前台运行：
              # 请将 192.168.1.100 替换为机器实际局域网 IP（可用 hostname -I 查看）：
-             ./dsh web --host 192.168.1.100 --port 3081 --no-open
+             ./dsh web --host 192.168.1.100 --port 3081 --token my_secret_token_123 --no-open
              # 也可以通过脚本自动提取本机第一个 IP 启动：
-             # ./dsh web --host $(hostname -I | awk '{print $1}') --port 3081 --no-open
-             参数说明：
+             # ./dsh web --host $(hostname -I | awk '{print $1}') --port 3081 --token my_secret_token_123 --no-open
+
+             核心参数说明：
              --host <IP>      绑定机器具体网卡 IP（出于防 RCE 远程命令执行安全考虑，系统禁止使用 0.0.0.0 通配地址）
              --port 3081      指定 Web 服务端口
+             --token <Token>  自定义 Web 登录鉴权 Token（也可在 .env 中设置 DSH_TOKEN）
              --no-open        无头/无桌面环境下禁止尝试打开本地图形浏览器
 
-          2. 命令行单次任务模式（Headless CLI）：
+             浏览器访问：
+             打开 http://192.168.1.100:3081/?token=my_secret_token_123 即可免密登录。
+
+          2. 后台持久服务模式：
+
+             【方式 A：推荐使用 PM2 管理（支持监控、异常重启与开机自启）】
+
+             方法 1：使用 ecosystem.config.js 配置文件（最推荐，便于管理参数与 API Key）
+             包内已附带示例配置文件 ecosystem.config.example.js：
+                cp ecosystem.config.example.js ecosystem.config.js
+                # 编辑 ecosystem.config.js，按需修改 IP、端口、Token 与 API Key
+                # 启动服务：
+                pm2 start ecosystem.config.js
+
+             方法 2：直接使用命令行参数启动：
+                pm2 start ./dsh --name dsh --interpreter none -- web --host $(hostname -I | awk '{print $1}') --port 3081 --token my_secret_token_123 --no-open
+
+             常用 PM2 运维命令：
+                pm2 logs dsh          # 查看实时输出日志
+                pm2 restart dsh       # 重启服务（若修改了配置文件需执行 pm2 restart ecosystem.config.js）
+                pm2 stop dsh          # 停止服务
+                pm2 save              # 保存当前运行列表（下次开机自动恢复）
+                pm2 startup           # 配置服务器开机自启动脚本
+
+             【方式 B：使用 nohup 简易后台运行】
+             nohup ./dsh web --host $(hostname -I | awk '{print $1}') --port 3081 --token my_secret_token_123 --no-open > dsh.log 2>&1 &
+
+          3. 命令行单次任务模式（Headless CLI）：
              export DEEPSEEK_API_KEY="sk-你的密钥"
              ./dsh --profile headless "请帮我分析当前目录下的代码结构"
-
-          3. 后台持久服务模式（配合 nohup 或 systemd）：
-             nohup ./dsh web --host 192.168.1.100 --port 3081 --no-open > dsh.log 2>&1 &
-
-          三、API Key 配置：
-          可以在当前目录创建 .env 文件，内容如下：
-          DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
           EOF
 
           tar -czvf "dsh-${{ matrix.platform }}.tar.gz" "$pkg_dir"
@@ -196,3 +255,80 @@ jobs:
           path: dsh-${{ matrix.platform }}.tar.gz
           if-no-files-found: error
           retention-days: 14
+
+  release:
+    needs: build
+    name: Publish to GitHub Releases
+    if: inputs.publish_release != false || startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          pattern: dsh-*
+          path: dist-release
+          merge-multiple: true
+
+      - name: Generate SHA256 checksums
+        working-directory: dist-release
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum dsh-*.tar.gz > SHA256SUMS
+          echo "Generated SHA256SUMS:"
+          cat SHA256SUMS
+
+      - name: Publish or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag_name || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || 'linux-latest' }}
+          IS_DRAFT: ${{ inputs.draft && '--draft' || '' }}
+          IS_PRERELEASE: ${{ inputs.prerelease && '--prerelease' || '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TITLE="DeepSeek Harness Linux Binaries ($TAG)"
+          NOTES="### DeepSeek Harness Standalone Linux Binaries (x64 / arm64)
+
+专为 Linux 服务器与 ARM 开发板（Armbian、树莓派）打包的独立单文件免安装运行程序。
+- **构建分支/Tag**：\`${{ github.ref_name }}\` (\`${{ github.sha }}\`)
+- **构建时间**：$(date -u +'%Y-%m-%d %H:%M:%S UTC')
+
+#### 📦 下载文件：
+- \`dsh-linux-x64.tar.gz\`：适用 64 位 x86 架构（Linux PC / 云服务器）
+- \`dsh-linux-arm64.tar.gz\`：适用 64 位 ARM 架构（香橙派、树莓派、各型号 Armbian 电视盒子）
+- \`SHA256SUMS\`：各归档包的 SHA256 校验和
+
+#### 🚀 快速使用：
+\`\`\`bash
+# 1. 解压进入目录（系统自带 tar 命令）
+tar -xzf dsh-linux-*.tar.gz
+cd dsh-linux-*
+
+# 2. 方式 A：推荐使用 PM2 启动后台持久服务（包内已含 ecosystem.config.example.js 模板）
+cp ecosystem.config.example.js ecosystem.config.js
+# 填入你的 DEEPSEEK_API_KEY 与访问 Token 后启动：
+pm2 start ecosystem.config.js
+
+# 2. 方式 B：前台直接启动 Web 服务（支持局域网浏览器访问）
+./dsh web --host \$(hostname -I | awk '{print \$1}') --port 3081 --token 自定义Token --no-open
+\`\`\`"
+
+          # 检查 Release 是否已存在
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release '$TAG' already exists. Updating release notes and uploading assets..."
+            gh release edit "$TAG" --title "$TITLE" --notes "$NOTES" $IS_DRAFT $IS_PRERELEASE || true
+            gh release upload "$TAG" dist-release/dsh-*.tar.gz dist-release/SHA256SUMS --clobber
+          else
+            echo "Creating new release '$TAG'..."
+            gh release create "$TAG" dist-release/dsh-*.tar.gz dist-release/SHA256SUMS \
+              --target "${{ github.sha }}" \
+              --title "$TITLE" \
+              --notes "$NOTES" \
+              $IS_DRAFT $IS_PRERELEASE
+          fi
+          echo "Successfully published release: $(gh release view "$TAG" --json url -q .url)"
+
