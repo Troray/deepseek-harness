@@ -283,51 +283,65 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ inputs.tag_name || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || 'linux-latest' }}
+          INPUT_TAG: ${{ inputs.tag_name }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          COMMIT_SHA: ${{ github.sha }}
           IS_DRAFT: ${{ inputs.draft && '--draft' || '' }}
           IS_PRERELEASE: ${{ inputs.prerelease && '--prerelease' || '' }}
         shell: bash
         run: |
           set -euo pipefail
 
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          elif [ "$REF_TYPE" = "tag" ]; then
+            TAG="$REF_NAME"
+          else
+            TAG="linux-latest"
+          fi
+
           TITLE="DeepSeek Harness Linux Binaries ($TAG)"
-          NOTES="### DeepSeek Harness Standalone Linux Binaries (x64 / arm64)
 
-专为 Linux 服务器与 ARM 开发板（Armbian、树莓派）打包的独立单文件免安装运行程序。
-- **构建分支/Tag**：\`${{ github.ref_name }}\` (\`${{ github.sha }}\`)
-- **构建时间**：$(date -u +'%Y-%m-%d %H:%M:%S UTC')
+          sed 's/^          //' <<EOF > release_notes.md
+          ### DeepSeek Harness Standalone Linux Binaries ($TAG)
 
-#### 📦 下载文件：
-- \`dsh-linux-x64.tar.gz\`：适用 64 位 x86 架构（Linux PC / 云服务器）
-- \`dsh-linux-arm64.tar.gz\`：适用 64 位 ARM 架构（香橙派、树莓派、各型号 Armbian 电视盒子）
-- \`SHA256SUMS\`：各归档包的 SHA256 校验和
+          专为 Linux 服务器与 ARM 开发板（Armbian、树莓派）打包的独立单文件免安装运行程序。
+          - **构建分支/Tag**：\`${REF_NAME}\` (\`${COMMIT_SHA}\`)
+          - **构建时间**：$(date -u +'%Y-%m-%d %H:%M:%S UTC')
 
-#### 🚀 快速使用：
-\`\`\`bash
-# 1. 解压进入目录（系统自带 tar 命令）
-tar -xzf dsh-linux-*.tar.gz
-cd dsh-linux-*
+          #### 📦 下载文件：
+          - \`dsh-linux-x64.tar.gz\`：适用 64 位 x86 架构（Linux PC / 云服务器）
+          - \`dsh-linux-arm64.tar.gz\`：适用 64 位 ARM 架构（香橙派、树莓派、各型号 Armbian 电视盒子）
+          - \`SHA256SUMS\`：各归档包的 SHA256 校验和
 
-# 2. 方式 A：推荐使用 PM2 启动后台持久服务（包内已含 ecosystem.config.example.js 模板）
-cp ecosystem.config.example.js ecosystem.config.js
-# 填入你的 DEEPSEEK_API_KEY 与访问 Token 后启动：
-pm2 start ecosystem.config.js
+          #### 🚀 快速使用：
+          \`\`\`bash
+          # 1. 解压进入目录（系统自带 tar 命令）
+          tar -xzf dsh-linux-*.tar.gz
+          cd dsh-linux-*
 
-# 2. 方式 B：前台直接启动 Web 服务（支持局域网浏览器访问）
-./dsh web --host \$(hostname -I | awk '{print \$1}') --port 3081 --token 自定义Token --no-open
-\`\`\`"
+          # 2. 方式 A：推荐使用 PM2 启动后台持久服务（包内已含 ecosystem.config.example.js 模板）
+          cp ecosystem.config.example.js ecosystem.config.js
+          # 填入你的 DEEPSEEK_API_KEY 与访问 Token 后启动：
+          pm2 start ecosystem.config.js
+
+          # 2. 方式 B：前台直接启动 Web 服务（支持局域网浏览器访问）
+          ./dsh web --host \$(hostname -I | awk '{print \$1}') --port 3081 --token 自定义Token --no-open
+          \`\`\`
+          EOF
 
           # 检查 Release 是否已存在
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release '$TAG' already exists. Updating release notes and uploading assets..."
-            gh release edit "$TAG" --title "$TITLE" --notes "$NOTES" $IS_DRAFT $IS_PRERELEASE || true
+            gh release edit "$TAG" --title "$TITLE" --notes-file release_notes.md $IS_DRAFT $IS_PRERELEASE || true
             gh release upload "$TAG" dist-release/dsh-*.tar.gz dist-release/SHA256SUMS --clobber
           else
             echo "Creating new release '$TAG'..."
             gh release create "$TAG" dist-release/dsh-*.tar.gz dist-release/SHA256SUMS \
-              --target "${{ github.sha }}" \
+              --target "$COMMIT_SHA" \
               --title "$TITLE" \
-              --notes "$NOTES" \
+              --notes-file release_notes.md \
               $IS_DRAFT $IS_PRERELEASE
           fi
           echo "Successfully published release: $(gh release view "$TAG" --json url -q .url)"
