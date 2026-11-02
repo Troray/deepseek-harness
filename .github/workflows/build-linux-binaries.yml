@@ -325,9 +325,6 @@ jobs:
           cp ecosystem.config.example.js ecosystem.config.js
           # 填入你的 DEEPSEEK_API_KEY 与访问 Token 后启动：
           pm2 start ecosystem.config.js
-
-          # 2. 方式 B：前台直接启动 Web 服务（支持局域网浏览器访问）
-          ./dsh web --host \$(hostname -I | awk '{print \$1}') --port 3081 --token 自定义Token --no-open
           \`\`\`
           EOF
 
